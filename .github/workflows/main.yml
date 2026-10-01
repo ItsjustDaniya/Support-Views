@@ -1,0 +1,35 @@
+name: Support Dashboard Refresh
+
+on:
+  schedule:
+    # 06:00, 11:00, 16:00, 21:00 IST  (cron is UTC; IST = UTC+5:30)
+    - cron: "25 0 * * *"
+    - cron: "25 5 * * *"
+    - cron: "25 10 * * *"
+    - cron: "25 15 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: support-dashboard-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh support dashboard sheet
+        env:
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python support_dashboard_refresh.py
