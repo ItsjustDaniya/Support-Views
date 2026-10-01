@@ -1,19 +1,20 @@
 """
 Support Dashboard refresh
 =========================
-Pulls every "Support – ..." saved question from Metabase, reads the Groomers and
-Master Data Google Sheets, and writes everything into ONE output Google Sheet
-that Looker Studio reads.
+Pulls every Support saved question from Metabase, reads the Groomers Google
+Sheet, and writes everything into ONE output Google Sheet that Looker Studio
+reads.
 
 Output tabs
 -----------
   Student_360        one row per student: profile + progress + attendance +
                      projects + certificates + grooming + referrals + mocks +
-                     payment + access + Groomers-sheet + Master-Data fields,
-                     plus a computed "pending_actions" column (#6)
-  MB_<name>          raw copy of each Metabase card (13 tabs)
+                     payment + access + certificate eligibility + module
+                     contest + placement (company / date / last groomer) +
+                     Groomers-sheet fields, plus a computed "pending_actions"
+                     column (#6)
+  MB_<name>          raw copy of each Metabase card (one tab per card)
   Groomers           cleaned copy of the Groomers tab
-  Master_Data        cleaned copy of the Master Data 2023-2026 tab
   _Refresh_Log       one line per run (row counts, errors)
 
 Environment (GitHub secrets – the only two inputs)
@@ -24,7 +25,7 @@ Environment (GitHub secrets – the only two inputs)
 All card ids and sheet ids are set in CONFIG below.
 
 The service account must have Editor on the output sheet and Viewer on the
-Groomers and Master Data sheets.
+Groomers sheet.
 """
 
 from __future__ import annotations
@@ -51,18 +52,16 @@ METABASE_URL = "https://metabase-lierhfgoeiwhr.newtonschool.co"
 GROOMERS_SHEET_ID = "13HWMhfMX3i5qsDCEYnQD1h1iFL-ScoNz0HQSgd4CIks"
 GROOMERS_TAB = "Groomers"
 
-MASTER_SHEET_ID = "1a6pdd4M3gKTUdRpb9HHzMAVnkrPwr-YPNwoaPT01Ghw"
-MASTER_TAB = "Master Data 2023-2026"
-
 # output sheet Looker Studio reads
 OUTPUT_SHEET_ID = "1K8QzqBO8PQKMnyifS5SgIbYgphYs_UZuyN6_2UHOTak"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Metabase saved questions (Support Analytics dashboard #681) -> output tab
+# A card with id 0 is skipped (not saved on Metabase yet).
 CARDS: dict[str, int] = {
     "Student_Details":  13073,   # Support – Student Details
-    "Upcoming_Batches": 13074,   # Upcoming batches - Support
+    "Upcoming_Batches": 13074,   # Upcoming batches - Support      (SQL: 02_upcoming_batches_v2)
     "Learning":         13075,   # Learning Progress
     "Attendance":       13076,   # Support - Attendance
     "Certificates":     13077,   # certificate updates
@@ -70,10 +69,14 @@ CARDS: dict[str, int] = {
     "Grooming":         13079,   # Support - grooming sessions
     "Payments":         13080,   # Support - payment fee
     "Profile":          13081,   # User Profiles
-    "Portal_Placement": 13082,   # Placement status
+    "Portal_Placement": 13082,   # Placement status                (SQL: 16_placement_status_v2)
     "Access_Revoked":   13083,   # Portal access - revoked
     "Mocks":            13084,   # Mock Interviews - support
     "Referrals":        13086,   # Referral Status - Support
+    # new cards – put the ids here once saved
+    "Cert_Eligibility": 0,       # Certificate Eligibility - Support (07_certificate_eligibility)
+    "Module_Contest":   0,       # Module Contest - Support          (24_module_contest)
+    "Track_View":       0,       # Student Track View - Support      (25_student_track_view)
 }
 
 # Groomers-sheet columns carried into Student_360 (renamed on the right)
@@ -118,24 +121,6 @@ GROOMER_COLS = {
 }
 GROOMER_DATE_COLS = ["Recommended date", "Picked Date", "Return to PI Date",
                      "Date of PR", "Placement Month", "Debarred Date"]
-
-# Master Data columns carried into Student_360 (only those present are used)
-MASTER_COLS = {
-    "Persona": "persona",
-    "Placeability Buckets": "placeability_bucket",
-    "Apti Bucket": "apti_bucket",
-    "Learner's Brackets": "learner_bracket",
-    "Background": "background",
-    "Working": "working",
-    "Work ex bracket": "work_ex_bracket",
-    "CTC bracket": "ctc_bracket",
-    "Age bracket": "age_bracket",
-    "Grad CGPA": "grad_cgpa",
-    "Grad bin": "grad_bin",
-    "12th Bucket": "twelfth_bucket",
-    "Fin Bucket": "fin_bucket",
-    "Financial Status Cleaned": "financial_status",
-}
 
 SHEET_ERRORS = {"#N/A", "#REF!", "#NUM!", "#VALUE!", "#DIV/0!", "#NAME?", "#ERROR!", "NA", "N/A"}
 WRITE_CHUNK_ROWS = 5000
@@ -299,8 +284,7 @@ def per_user(df: pd.DataFrame | None, cols: list[str], sort_col: str | None = No
     return d.drop_duplicates("user_id")[keep]
 
 
-def build_student_360(cards: dict[str, pd.DataFrame], groomers: pd.DataFrame,
-                      master: pd.DataFrame) -> pd.DataFrame:
+def build_student_360(cards: dict[str, pd.DataFrame], groomers: pd.DataFrame) -> pd.DataFrame:
     # base: every DS student the portal knows about (profile card), plus anyone
     # only present in the Groomers sheet
     base = per_user(cards.get("Profile"), [
@@ -378,8 +362,33 @@ def build_student_360(cards: dict[str, pd.DataFrame], groomers: pd.DataFrame,
         "ai_mocks_taken", "last_ai_mock_on", "avg_ai_mock_rating", "mock_tokens", "mocks_booked",
         "unused_valid_tokens", "next_token_expiry", "can_book_now"]), on="user_id", how="left")
     out = out.merge(per_user(cards.get("Portal_Placement"), [
-        "portal_placement_status", "portal_pr_marked_on", "npr_till", "number_of_no_shows"]),
+        "portal_placement_status", "portal_pr_marked_on", "placement_status", "placed_company",
+        "placed_on", "ctc", "offer_status", "offers_count", "last_grooming_on", "last_groomer",
+        "last_grooming_type", "days_since_last_grooming", "npr_till", "number_of_no_shows"]),
         on="user_id", how="left")
+
+    # certificate eligibility (80% assignments, 80% attendance, project >= 8,
+    # module contest >= 65 on all 3 stacks)
+    out = out.merge(per_user(cards.get("Cert_Eligibility"), [
+        "certificate_eligibility", "stacks_done", "spreadsheets_status", "sql_status",
+        "power_bi_status", "pending_items"]).rename(columns={"pending_items": "certificate_pending"}),
+        on="user_id", how="left")
+
+    # module contest – one row per track -> one line per student
+    mc = cards.get("Module_Contest")
+    if mc is not None and not mc.empty:
+        mc = mc.copy()
+        mc["line"] = mc.apply(lambda x: f"{x['track']}: {x['contest_result']}"
+                              + (f" ({x['best_contest_score']}%)" if str(x.get("best_contest_score", "")) not in ("", "nan") else ""),
+                              axis=1)
+        mc["step"] = mc["track"] + ": " + mc["next_step"].astype(str)
+        g = mc.groupby("user_id")
+        agg = pd.DataFrame({
+            "module_contest_by_track": g["line"].apply(" | ".join),
+            "module_contest_next_step": g["step"].apply(" | ".join),
+            "module_contest_cleared_tracks": g["contest_result"].apply(lambda s: (s == "Cleared").sum()),
+        }).reset_index()
+        out = out.merge(agg, on="user_id", how="left")
     out = out.merge(per_user(cards.get("Payments"), [
         "booking_fee_paid", "block_fee_paid", "nbfc_status", "nbfc_status_on"]), on="user_id", how="left")
     out = out.merge(per_user(cards.get("Access_Revoked"),
@@ -391,12 +400,6 @@ def build_student_360(cards: dict[str, pd.DataFrame], groomers: pd.DataFrame,
         gcols = {k: v for k, v in GROOMER_COLS.items() if k in groomers.columns}
         g = groomers[["user_id"] + list(gcols)].rename(columns=gcols)
         out = out.merge(g, on="user_id", how="left")
-
-    # Master Data sheet
-    if not master.empty:
-        mcols = {k: v for k, v in MASTER_COLS.items() if k in master.columns}
-        m = master[["user_id"] + list(mcols)].rename(columns=mcols)
-        out = out.merge(m, on="user_id", how="left")
 
     # sheet PR vs portal PR mismatch
     if "pr" in out.columns and "portal_placement_status" in out.columns:
@@ -415,6 +418,7 @@ def pending_actions(r: pd.Series) -> str:
     placed = str(r.get("placed", "") or "")
     if (str(r.get("pr", "")) == "PR"
             or (placed.startswith("Placed") and "now returned" not in placed)
+            or str(r.get("placement_status", "")) == "Placed"
             or str(r.get("access_state", "")) == "Access revoked / restricted"):
         return ""
     acts = []
@@ -436,6 +440,10 @@ def pending_actions(r: pd.Series) -> str:
     flags = str(r.get("student_flags", "") or "")
     if flags and flags != "nan":
         acts.append(f"Flag: {flags}")
+    steps = str(r.get("module_contest_next_step", "") or "")
+    for part in steps.split(" | "):
+        if any(k in part for k in ("take next attempt", "Missed attempt", "Attempts exhausted")):
+            acts.append(f"Module contest – {part}")
     ns = pd.to_numeric(r.get("student_no_shows"), errors="coerce")
     if pd.notna(ns) and ns > 0:
         acts.append(f"{int(ns)} grooming no-show(s)")
@@ -457,6 +465,9 @@ def main() -> int:
     # 1. Metabase cards
     cards: dict[str, pd.DataFrame] = {}
     for key, cid in CARDS.items():
+        if not cid:
+            log(f"MB {key:<17} skipped – card id not set")
+            continue
         try:
             t = time.time()
             df = clean_card(mb.card_df(cid))
@@ -475,16 +486,9 @@ def main() -> int:
         groomers = pd.DataFrame()
         errors.append(f"Groomers sheet: {e}")
         log(f"Groomers sheet FAILED – {e}")
-    try:
-        master = clean_sheet(read_tab(gc, MASTER_SHEET_ID, MASTER_TAB), "User ID")
-        log(f"Master Data sheet   {len(master):>6} rows")
-    except Exception as e:
-        master = pd.DataFrame()
-        errors.append(f"Master Data sheet: {e}")
-        log(f"Master Data sheet FAILED – {e}")
 
     # 3. Build + write
-    s360 = build_student_360(cards, groomers, master)
+    s360 = build_student_360(cards, groomers)
     log(f"Student_360         {len(s360):>6} rows x {s360.shape[1]} cols")
 
     write_tab(out_book, "Student_360", s360)
@@ -492,8 +496,6 @@ def main() -> int:
         write_tab(out_book, f"MB_{key}", df)
     if not groomers.empty:
         write_tab(out_book, "Groomers", groomers)
-    if not master.empty:
-        write_tab(out_book, "Master_Data", master)
 
     secs = round(time.time() - t0)
     status = "OK" if not errors else "PARTIAL"
