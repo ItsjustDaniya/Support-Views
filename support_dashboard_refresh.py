@@ -16,12 +16,12 @@ Output tabs
   Master_Data        cleaned copy of the Master Data 2023-2026 tab
   _Refresh_Log       one line per run (row counts, errors)
 
-Environment (GitHub secrets)
+Environment (GitHub secrets – the only two inputs)
 ----------------------------
   METABASE_API_KEY              Metabase API key
   GOOGLE_SERVICE_ACCOUNT_JSON   service-account JSON text, or a path to the file
-  SUPPORT_OUTPUT_SHEET_ID (opt) overrides OUTPUT_SHEET_ID below
-  CARD_IDS (optional)           JSON {"Referrals": 13090, ...} to override the ids below.
+
+All card ids and sheet ids are set in CONFIG below.
 
 The service account must have Editor on the output sheet and Viewer on the
 Groomers and Master Data sheets.
@@ -54,28 +54,26 @@ GROOMERS_TAB = "Groomers"
 MASTER_SHEET_ID = "1a6pdd4M3gKTUdRpb9HHzMAVnkrPwr-YPNwoaPT01Ghw"
 MASTER_TAB = "Master Data 2023-2026"
 
-# output sheet Looker Studio reads (env SUPPORT_OUTPUT_SHEET_ID overrides)
-OUTPUT_SHEET_ID = os.environ.get("SUPPORT_OUTPUT_SHEET_ID") or "1K8QzqBO8PQKMnyifS5SgIbYgphYs_UZuyN6_2UHOTak"
+# output sheet Looker Studio reads
+OUTPUT_SHEET_ID = "1K8QzqBO8PQKMnyifS5SgIbYgphYs_UZuyN6_2UHOTak"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# tab key -> (saved question name in Metabase, pinned id or None)
-CARDS: dict[str, tuple[str, int | None]] = {
-    # ids from the "Support Analytics" dashboard (#681)
-    "Student_Details":  ("Support – Student Details",          13073),
-    "Upcoming_Batches": ("Upcoming batches - Support",         13074),
-    "Learning":         ("Learning Progress",                  13075),
-    "Attendance":       ("Support - Attendance",               13076),
-    "Certificates":     ("certificate updates",                13077),
-    "Projects":         ("Project Completion - support",       13078),
-    "Grooming":         ("Support - grooming sessions",        13079),
-    "Payments":         ("Support - payment fee",              13080),
-    "Profile":          ("User Profiles",                      13081),
-    "Portal_Placement": ("Placement status",                   13082),
-    "Access_Revoked":   ("Portal access - revoked",            13083),
-    "Mocks":            ("Mock Interviews - support",          13084),
-    # not saved yet – found by name once it exists; skipped (and logged) until then
-    "Referrals":        ("Support – Referral Status",          None),
+# Metabase saved questions (Support Analytics dashboard #681) -> output tab
+CARDS: dict[str, int] = {
+    "Student_Details":  13073,   # Support – Student Details
+    "Upcoming_Batches": 13074,   # Upcoming batches - Support
+    "Learning":         13075,   # Learning Progress
+    "Attendance":       13076,   # Support - Attendance
+    "Certificates":     13077,   # certificate updates
+    "Projects":         13078,   # Project Completion - support
+    "Grooming":         13079,   # Support - grooming sessions
+    "Payments":         13080,   # Support - payment fee
+    "Profile":          13081,   # User Profiles
+    "Portal_Placement": 13082,   # Placement status
+    "Access_Revoked":   13083,   # Portal access - revoked
+    "Mocks":            13084,   # Mock Interviews - support
+    "Referrals":        13086,   # Referral Status - Support
 }
 
 # Groomers-sheet columns carried into Student_360 (renamed on the right)
@@ -171,23 +169,6 @@ class Metabase:
                 log(f"  retry {attempt + 1} for {path} in {wait}s ({e})")
                 time.sleep(wait)
         raise RuntimeError("unreachable")
-
-    @staticmethod
-    def _norm(name: str) -> str:
-        return re.sub(r"\s+", " ", name.replace("–", "-").replace("—", "-")).strip().lower()
-
-    def find_card_id(self, name: str) -> int:
-        r = self._req("GET", "/api/search", params={"q": name, "models": "card"})
-        items = r.json()
-        items = items.get("data", items) if isinstance(items, dict) else items
-        want = self._norm(name)
-        hits = [i for i in items if self._norm(i.get("name", "")) == want and not i.get("archived")]
-        if not hits:
-            raise LookupError(f"No saved question named '{name}'")
-        if len(hits) > 1:
-            hits.sort(key=lambda i: i.get("updated_at", ""), reverse=True)
-            log(f"  {len(hits)} questions named '{name}' – using most recently updated id {hits[0]['id']}")
-        return int(hits[0]["id"])
 
     def card_df(self, card_id: int) -> pd.DataFrame:
         r = self._req("POST", f"/api/card/{card_id}/query/csv",
@@ -471,15 +452,12 @@ def main() -> int:
 
     mb = Metabase(METABASE_URL, os.environ["METABASE_API_KEY"])
     gc = gsheets_client()
-    out_book = gc.open_by_key(os.environ.get("SUPPORT_OUTPUT_SHEET_ID") or OUTPUT_SHEET_ID)
-
-    pinned = json.loads(os.environ.get("CARD_IDS", "") or "{}")
+    out_book = gc.open_by_key(OUTPUT_SHEET_ID)
 
     # 1. Metabase cards
     cards: dict[str, pd.DataFrame] = {}
-    for key, (name, cid) in CARDS.items():
+    for key, cid in CARDS.items():
         try:
-            cid = int(pinned.get(key) or cid or mb.find_card_id(name))
             t = time.time()
             df = clean_card(mb.card_df(cid))
             cards[key] = df
