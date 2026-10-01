@@ -73,10 +73,9 @@ CARDS: dict[str, int] = {
     "Access_Revoked":   13083,   # Portal access - revoked
     "Mocks":            13084,   # Mock Interviews - support
     "Referrals":        13086,   # Referral Status - Support
-    # new cards – put the ids here once saved
-    "Cert_Eligibility": 0,       # Certificate Eligibility - Support (07_certificate_eligibility)
-    "Module_Contest":   0,       # Module Contest - Support          (24_module_contest)
-    "Track_View":       0,       # Student Track View - Support      (25_student_track_view)
+    "Cert_Eligibility": 13109,   # Certificate eligibility         (SQL: 07_certificate_eligibility)
+    "Module_Contest":   13110,   # Module Contest - Support        (SQL: 24_module_contest)
+    "Track_View":       13111,   # Cumulative Student View         (SQL: 25_student_track_view)
 }
 
 # Groomers-sheet columns carried into Student_360 (renamed on the right)
